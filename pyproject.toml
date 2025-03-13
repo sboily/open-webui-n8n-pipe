@@ -27,8 +27,7 @@ dependencies = [
     "httpx>=0.24.0",
     "pydantic>=1.10.0",
     "pytest>=8.3.5",
-    "pytest-asyncio>=0.25.3",
-
+    "pytest-asyncio>=0.23.5",
 ]
 requires-python = ">=3.8"
 
