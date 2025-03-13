@@ -163,27 +163,6 @@ Comprehensive tests are provided to ensure code reliability. To run them:
 python -m pytest -xvs
 ```
 
-## Advanced Configuration
-
-### Limiting Message History
-
-You can limit the number of messages kept in the conversation history using the `history_limit` parameter:
-
-```python
-pipe.valves.history_limit = 10  # Keep only the 10 most recent messages
-```
-
-Setting this to 0 will keep all messages.
-
-### Logging
-
-The module uses Python's standard logging module. To enable debug logs:
-
-```python
-import logging
-logging.basicConfig(level=logging.DEBUG)
-```
-
 ## Contributing
 
 Contributions are welcome! Please feel free to submit a Pull Request.
