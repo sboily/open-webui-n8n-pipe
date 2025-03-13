@@ -110,31 +110,6 @@ When an event emitter is provided, the module emits events in the following form
 4. The pipe receives the response from n8n and adds it to the conversation
 5. The interface displays the response as if it came directly from the language model
 
-## Example Usage
-
-Here's a simple example of how to use the pipe in your code:
-
-```python
-from n8n_pipe import Pipe
-
-async def use_n8n_pipe():
-    async with Pipe() as pipe:
-        # Configuration
-        pipe.valves.n8n_host = "https://n8n.example.com"
-        pipe.valves.n8n_webhook_id = "your-webhook-id"
-        pipe.valves.n8n_bearer_token = "your-secure-token"
-        pipe.valves.max_retries = 3
-        
-        # Prepare message
-        messages = [
-            {"role": "user", "content": "What's the weather in Paris?"}
-        ]
-        
-        # Call pipe
-        response = await pipe.pipe({"messages": messages}, user_info)
-        print("n8n response:", response)
-```
-
 ## Error Handling
 
 The pipe includes comprehensive error handling:
