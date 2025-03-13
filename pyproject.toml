@@ -1,0 +1,63 @@
+[build-system]
+requires = ["setuptools>=42", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "open-webui-n8n-pipe"
+version = "0.2.0"
+description = "N8N workflow connector for Open-WebUI"
+readme = "README.md"
+authors = [
+    {name = "Sylvain BOILY", email = "sylvainboilydroid@gmail.com"}
+]
+license = {text = "MIT"}
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Intended Audience :: Developers",
+]
+keywords = ["open-webui", "n8n", "chatbot", "api", "async"]
+dependencies = [
+    "httpx>=0.24.0",
+    "pydantic>=1.10.0",
+    "pytest>=8.3.5",
+    "pytest-asyncio>=0.25.3",
+
+]
+requires-python = ">=3.8"
+
+[project.urls]
+"Homepage" = "https://github.com/sboily/open-webui-n8n-pipe"
+"Bug Tracker" = "https://github.com/sboily/open-webui-n8n-pipe/issues"
+"Source Code" = "https://github.com/sboily/open-webui-n8n-pipe"
+
+[tool.setuptools]
+packages = ["n8n_pipe"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = "test_*.py"
+python_functions = "test_*"
+python_classes = "Test*"
+asyncio_mode = "auto"
+
+[tool.black]
+line-length = 100
+target-version = ["py38", "py39", "py310", "py311"]
+
+[tool.isort]
+profile = "black"
+line_length = 100
+
+[tool.mypy]
+python_version = "3.8"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
