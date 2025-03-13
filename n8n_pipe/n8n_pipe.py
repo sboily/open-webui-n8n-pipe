@@ -4,8 +4,8 @@ This module provides a connector between Open-WebUI and n8n workflows.
 
 title: N8N Pipe Function
 author: Sylvain BOILY (fork from https://openwebui.com/f/coleam/n8n_pipe)
-author_url: https://github.com/sboily/open-webui
-funding_url: https://github.com/sboily/open-webui
+author_url: https://github.com/sboily/open-webui-n8n-pipe
+funding_url: https://github.com/sboily/open-webui-n8n-pipe
 version: 0.2
 """
 
