@@ -11,7 +11,9 @@ version: 0.2
 
 import logging
 import time
-from typing import Any, Awaitable, Callable, Dict, Optional, Union
+import base64
+import io
+from typing import Any, Awaitable, Callable, Dict, Optional, Union, List, Tuple
 from urllib.parse import urljoin
 
 # Add type stubs for missing libraries
@@ -174,19 +176,31 @@ class Pipe:
         )
         return urljoin(f"{base_url}/", path.lstrip("/"))
 
-    def _extract_question(self, content: str) -> str:
-        """Extract the actual question from the content string.
+    def _extract_question(self, content: Union[str, list]) -> str:
+        """Extract the actual question from the content.
 
         Args:
-            content: The message content to process
+            content: The message content to process, either a string or a list
 
         Returns:
             The cleaned question string
         """
-        return content.split("Prompt: ")[-1] if "Prompt: " in content else content  # NOQA
+        # Handle case when content is a list (e.g., when images are attached)
+        if isinstance(content, list):
+            text_parts = []
+            for item in content:
+                if item.get('type') == 'text' and 'text' in item:
+                    text_parts.append(item['text'])
+            content = ' '.join(text_parts)
+
+        # Handle string content
+        if isinstance(content, str):
+            return content.split("Prompt: ")[-1] if "Prompt: " in content else content
+
+        return ""  # Return empty string if content is neither string nor list
 
     def _create_session_id(
-        self, user: Optional[Dict[str, Any]], first_message: Optional[str]
+        self, user: Optional[Dict[str, Any]], first_message: Optional[Union[str, list]]
     ) -> str:
         """Create a session identifier for the n8n workflow.
 
@@ -284,11 +298,20 @@ class Pipe:
             body["messages"].append({"role": "assistant", "content": error_message})  # NOQA
             return {"error": error_message}
 
-        question = last_message.get("content", "")
-        question = self._extract_question(question)
+        # Extract content from the last message
+        question_parts = last_message.get("content", "")
+        # Pass the content to _extract_question which now handles both string and list formats
+        question = self._extract_question(question_parts)
+
+        # Extract image URLs if present
+        image_urls = []
+        if isinstance(question_parts, list):
+            for item in question_parts:
+                if item.get('type') == 'image_url' and 'image_url' in item and 'url' in item['image_url']:
+                    image_urls.append(item['image_url']['url'])
 
         # If no question content found
-        if not question.strip():
+        if not question.strip() and not image_urls:
             await self.emit_status(
                 __event_emitter__,
                 "warning",
@@ -320,7 +343,12 @@ class Pipe:
 
             # Get the appropriate webhook URL
             webhook_url = self.get_webhook_url()
-            logger.info(f"Calling n8n webhook at: {webhook_url}")
+
+            # Log message content type
+            if image_urls:
+                logger.info(f"Calling n8n webhook at: {webhook_url} with text and {len(image_urls)} images")
+            else:
+                logger.info(f"Calling n8n webhook at: {webhook_url} with text only")
 
             # Try request with retries
             n8n_response: Optional[str] = None
@@ -337,9 +365,49 @@ class Pipe:
                     )
 
                     # Use httpx for async HTTP request
-                    response = await self._http_client.post(
-                        webhook_url, json=payload, headers=headers
-                    )
+                    if image_urls:
+                        # When images are present, use form data instead of JSON
+                        form_data = {}
+                        files = []
+
+                        # Add text fields to form data
+                        form_data["sessionId"] = session_id
+                        form_data[self.valves.input_field] = question
+
+                        # Add image files directly from image_urls
+                        for idx, image_url in enumerate(image_urls):
+                            # Handle data URLs
+                            if image_url.startswith('data:'):
+                                # Extract mime type and content
+                                mime_type = image_url.split(';')[0].split(':')[1]
+                                file_ext = '.jpg' if 'jpeg' in mime_type else '.' + mime_type.split('/')[-1]
+                                try:
+                                    # Extract base64 content
+                                    encoded_data = image_url.split(',')[1]
+                                    image_data = base64.b64decode(encoded_data)
+                                    # Add to files list for multipart upload
+                                    files.append((f"image_{idx}", (f"image_{idx}{file_ext}", io.BytesIO(image_data), mime_type)))
+                                    logger.debug(f"Added image_{idx} from data URL")
+                                except Exception as e:
+                                    logger.error(f"Failed to process image data URL: {str(e)}")
+
+                        # Update content type for multipart/form-data (don't specify it, httpx will set it automatically)
+                        form_headers = {
+                            "Authorization": f"Bearer {self.valves.n8n_bearer_token}"
+                        }
+
+                        # Send multipart/form-data request
+                        response = await self._http_client.post(
+                            webhook_url,
+                            data=form_data,
+                            files=files,
+                            headers=form_headers
+                        )
+                    else:
+                        # No images, use standard JSON request
+                        response = await self._http_client.post(
+                            webhook_url, json=payload, headers=headers,
+                        )
 
                     # Check status code
                     if response.status_code == 200:
@@ -379,10 +447,7 @@ class Pipe:
             body["messages"].append({"role": "assistant", "content": n8n_response})  # NOQA
 
             # Limit history if configured
-            if (
-                self.valves.history_limit > 0
-                and len(body["messages"]) > self.valves.history_limit  # NOQA
-            ):  # NOQA
+            if (0 < self.valves.history_limit < len(body["messages"])):  # NOQA
                 body["messages"] = body["messages"][-self.valves.history_limit :]  # NOQA
 
             await self.emit_status(__event_emitter__, "info", "Complete", True)
