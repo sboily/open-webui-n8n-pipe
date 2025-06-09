@@ -4,6 +4,8 @@ This module implements a robust, asynchronous pipe for Open-WebUI that serves as
 
 Based on/forked from https://openwebui.com/f/coleam/n8n_pipe. Many thanks to the original author.
 
+Hosted in openwebui: https://openwebui.com/f/quintana/n8n_pipe_ng
+
 ## Features
 
 - ✅ Fully asynchronous interface compatible with Open-WebUI
