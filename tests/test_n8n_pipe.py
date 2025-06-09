@@ -1,3 +1,5 @@
+import base64
+import io
 import json
 import logging
 import time
@@ -609,3 +611,367 @@ async def test_validator_host_url():
             e
         ), f"Unexpected error message: {str(e)}"
         print(f"Validator error message: {str(e)}")
+
+
+# New attachment tests
+@pytest.mark.asyncio
+async def test_extract_question_with_list_content():
+    """Test _extract_question method with list content (images + text)."""
+    pipe = Pipe()
+
+    # Test with mixed content (text + image)
+    list_content = [
+        {"type": "text", "text": "What do you see in this image?"},
+        {
+            "type": "image_url",
+            "image_url": {
+                "url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg=="
+            },
+        },
+    ]
+
+    result = pipe._extract_question(list_content)
+    assert result == "What do you see in this image?"
+
+    # Test with multiple text parts
+    list_content = [
+        {"type": "text", "text": "First part"},
+        {"type": "text", "text": "Second part"},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,test"}},
+    ]
+
+    result = pipe._extract_question(list_content)
+    assert result == "First part Second part"
+
+    # Test with empty list
+    result = pipe._extract_question([])
+    assert result == ""
+
+    # Test with only images (no text)
+    list_content = [{"type": "image_url", "image_url": {"url": "data:image/png;base64,test"}}]
+
+    result = pipe._extract_question(list_content)
+    assert result == ""
+
+    # Test with prompt prefix in list content
+    list_content = [
+        {"type": "text", "text": "Prompt: What do you see?"},
+    ]
+
+    result = pipe._extract_question(list_content)
+    assert result == "What do you see?"
+
+
+@pytest.mark.asyncio
+async def test_create_session_id_with_list_content():
+    """Test _create_session_id method with list content."""
+    pipe = Pipe()
+
+    user = {"id": "user123"}
+
+    # Test with list message content
+    message_list = [
+        {"type": "text", "text": "Initial message"},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,test"}},
+    ]
+
+    session_id = pipe._create_session_id(user, message_list)
+    assert session_id.startswith("user123")
+
+
+@pytest.mark.asyncio
+async def test_pipe_with_image_attachments(pipe, user, event_emitter):
+    """Test pipe method with image attachments."""
+    # Create request body with image content
+    request_body = {
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "What do you see in this image?"},
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg=="
+                        },
+                    },
+                ],
+            }
+        ]
+    }
+
+    # Create mock response
+    mock_response = AsyncMock()
+    mock_response.status_code = 200
+    mock_response.json = MagicMock(
+        return_value={pipe.valves.response_field: "I see a small test image"}
+    )
+
+    # Mock the async post method
+    async def mock_post_async(*args, **kwargs):
+        return mock_response
+
+    with patch.object(pipe._http_client, "post", side_effect=mock_post_async) as mock_post:
+        result = await pipe.pipe(request_body, user, event_emitter)
+
+        # Verify HTTP call was made
+        mock_post.assert_called_once()
+
+        # Verify multipart form data was used (not JSON)
+        args, kwargs = mock_post.call_args
+        assert "data" in kwargs  # Form data
+        assert "files" in kwargs  # Files
+        assert "json" not in kwargs  # Should not use JSON with images
+
+        # Verify form data contains expected fields
+        assert kwargs["data"]["sessionId"] is not None
+        assert kwargs["data"][pipe.valves.input_field] == "What do you see in this image?"
+
+        # Verify files were attached
+        assert len(kwargs["files"]) == 1
+        assert kwargs["files"][0][0] == "image_0"  # Field name
+
+        # Verify result
+        assert result == "I see a small test image"
+
+
+@pytest.mark.asyncio
+async def test_pipe_with_multiple_image_attachments(pipe, user, event_emitter):
+    """Test pipe method with multiple image attachments."""
+    # Create request body with multiple images
+    request_body = {
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "Compare these images"},
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg=="
+                        },
+                    },
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEAYABgAAD/2wBDAAEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQH/2wBDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQH/wAARCAABAAEDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAv/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFQEBAQAAAAAAAAAAAAAAAAAAAAX/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIRAxEAPwA/8A8A"
+                        },
+                    },
+                ],
+            }
+        ]
+    }
+
+    # Create mock response
+    mock_response = AsyncMock()
+    mock_response.status_code = 200
+    mock_response.json = MagicMock(
+        return_value={pipe.valves.response_field: "I see two test images"}
+    )
+
+    async def mock_post_async(*args, **kwargs):
+        return mock_response
+
+    with patch.object(pipe._http_client, "post", side_effect=mock_post_async) as mock_post:
+        result = await pipe.pipe(request_body, user, event_emitter)
+
+        # Verify call was made with multipart data
+        args, kwargs = mock_post.call_args
+        assert "files" in kwargs
+
+        # Verify both images were attached
+        assert len(kwargs["files"]) == 2
+        assert kwargs["files"][0][0] == "image_0"
+        assert kwargs["files"][1][0] == "image_1"
+
+        # Verify text content
+        assert kwargs["data"][pipe.valves.input_field] == "Compare these images"
+
+        assert result == "I see two test images"
+
+
+@pytest.mark.asyncio
+async def test_pipe_with_image_only_content(pipe, user, event_emitter):
+    """Test pipe method with image-only content (no text)."""
+    request_body = {
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg=="
+                        },
+                    }
+                ],
+            }
+        ]
+    }
+
+    # Create mock response
+    mock_response = AsyncMock()
+    mock_response.status_code = 200
+    mock_response.json = MagicMock(
+        return_value={pipe.valves.response_field: "Image analysis complete"}
+    )
+
+    async def mock_post_async(*args, **kwargs):
+        return mock_response
+
+    with patch.object(pipe._http_client, "post", side_effect=mock_post_async) as mock_post:
+        result = await pipe.pipe(request_body, user, event_emitter)
+
+        # Verify call was made with multipart data
+        args, kwargs = mock_post.call_args
+        assert "files" in kwargs
+        assert len(kwargs["files"]) == 1
+
+        # Verify empty text content is allowed when images are present
+        assert kwargs["data"][pipe.valves.input_field] == ""
+
+        assert result == "Image analysis complete"
+
+
+@pytest.mark.asyncio
+async def test_pipe_empty_content_no_images(pipe, event_emitter):
+    """Test pipe method with empty content and no images (should fail)."""
+    request_body = {
+        "messages": [
+            {"role": "user", "content": [{"type": "text", "text": "   "}]}  # Only whitespace
+        ]
+    }
+
+    result = await pipe.pipe(request_body, None, event_emitter)
+
+    # Should return error for empty content with no images
+    assert isinstance(result, dict)
+    assert "error" in result
+    assert "Please provide a non-empty question" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_pipe_invalid_image_data(pipe, user, event_emitter):
+    """Test pipe method with invalid base64 image data."""
+    request_body = {
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "What's in this image?"},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": "data:image/png;base64,invalid_base64_data!!!"},
+                    },
+                ],
+            }
+        ]
+    }
+
+    # Create mock response
+    mock_response = AsyncMock()
+    mock_response.status_code = 200
+    mock_response.json = MagicMock(
+        return_value={pipe.valves.response_field: "Text processed successfully"}
+    )
+
+    async def mock_post_async(*args, **kwargs):
+        return mock_response
+
+    with patch.object(pipe._http_client, "post", side_effect=mock_post_async) as mock_post:
+        with patch("n8n_pipe.n8n_pipe.logger") as mock_logger:
+            result = await pipe.pipe(request_body, user, event_emitter)
+
+            # Should still work with text, but log error for invalid image
+            mock_logger.error.assert_called()
+            error_call_args = mock_logger.error.call_args[0][0]
+            assert "Failed to process image data URL" in error_call_args
+
+            # Text should still be processed
+            assert result == "Text processed successfully"
+
+
+@pytest.mark.asyncio
+async def test_pipe_mixed_content_types(pipe, user, event_emitter):
+    """Test pipe method with mixed content types in correct order."""
+    request_body = {
+        "messages": [
+            {"role": "system", "content": "You are a helpful assistant"},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "Analyze this image"},
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg=="
+                        },
+                    },
+                    {"type": "text", "text": "and tell me what you see"},
+                ],
+            },
+        ]
+    }
+
+    # Create mock response
+    mock_response = AsyncMock()
+    mock_response.status_code = 200
+    mock_response.json = MagicMock(
+        return_value={pipe.valves.response_field: "I see a test pattern"}
+    )
+
+    async def mock_post_async(*args, **kwargs):
+        return mock_response
+
+    with patch.object(pipe._http_client, "post", side_effect=mock_post_async) as mock_post:
+        result = await pipe.pipe(request_body, user, event_emitter)
+
+        # Verify call was made with multipart data
+        args, kwargs = mock_post.call_args
+        assert "files" in kwargs
+        assert len(kwargs["files"]) == 1
+
+        # Verify combined text content
+        expected_text = "Analyze this image and tell me what you see"
+        assert kwargs["data"][pipe.valves.input_field] == expected_text
+
+        assert result == "I see a test pattern"
+
+
+@pytest.mark.asyncio
+async def test_attachment_logging(pipe, user, event_emitter):
+    """Test that attachment presence is properly logged."""
+    request_body = {
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "Process this image"},
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg=="
+                        },
+                    },
+                ],
+            }
+        ]
+    }
+
+    # Create mock response
+    mock_response = AsyncMock()
+    mock_response.status_code = 200
+    mock_response.json = MagicMock(return_value={pipe.valves.response_field: "Processed"})
+
+    async def mock_post_async(*args, **kwargs):
+        return mock_response
+
+    with patch.object(pipe._http_client, "post", side_effect=mock_post_async):
+        with patch("n8n_pipe.n8n_pipe.logger") as mock_logger:
+            result = await pipe.pipe(request_body, user, event_emitter)
+
+            # Verify logging includes image count
+            mock_logger.info.assert_called()
+            info_calls = [call.args[0] for call in mock_logger.info.call_args_list]
+            image_log_found = any("with text and 1 images" in call for call in info_calls)
+            assert image_log_found, f"Expected image logging not found in: {info_calls}"
