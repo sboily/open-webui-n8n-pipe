@@ -17,7 +17,7 @@ from urllib.parse import urljoin
 # Add type stubs for missing libraries
 try:
     import httpx
-    from pydantic import BaseModel, Field, validator
+    from pydantic import BaseModel, Field, field_validator
 except ImportError:
     # For type checking only
     pass
@@ -75,7 +75,8 @@ class Pipe:
             default=10, description="Maximum number of messages to include in history"  # NOQA
         )
 
-        @validator("n8n_host")
+        @field_validator("n8n_host")
+        @classmethod
         def validate_host_url(cls, v: str) -> str:
             """Validate that the n8n host URL includes a protocol.
 
