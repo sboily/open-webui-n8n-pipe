@@ -9,11 +9,11 @@ funding_url: https://github.com/sboily/open-webui-n8n-pipe
 version: 0.2
 """
 
-import logging
-import time
 import base64
 import io
-from typing import Any, Awaitable, Callable, Dict, Optional, Union, List, Tuple
+import logging
+import time
+from typing import Any, Awaitable, Callable, Dict, Optional, Union
 from urllib.parse import urljoin
 
 # Add type stubs for missing libraries
@@ -190,9 +190,9 @@ class Pipe:
         if isinstance(content, list):
             text_parts = []
             for item in content:
-                if item.get('type') == 'text' and 'text' in item:
-                    text_parts.append(item['text'])
-            content = ' '.join(text_parts)
+                if item.get("type") == "text" and "text" in item:
+                    text_parts.append(item["text"])
+            content = " ".join(text_parts)
 
         # Handle string content
         if isinstance(content, str):
@@ -201,7 +201,9 @@ class Pipe:
         return ""  # Return empty string if content is neither string nor list
 
     def _create_session_id(
-        self, user: Optional[Dict[str, Any]], first_message: Optional[Union[str, list]]
+        self,
+        user: Optional[Dict[str, Any]],
+        first_message: Optional[Union[str, list]],
     ) -> str:
         """Create a session identifier for the n8n workflow.
 
@@ -301,15 +303,19 @@ class Pipe:
 
         # Extract content from the last message
         question_parts = last_message.get("content", "")
-        # Pass the content to _extract_question which now handles both string and list formats
+        # Pass the content to _extract_question which now handles both formats
         question = self._extract_question(question_parts)
 
         # Extract image URLs if present
         image_urls = []
         if isinstance(question_parts, list):
             for item in question_parts:
-                if item.get('type') == 'image_url' and 'image_url' in item and 'url' in item['image_url']:
-                    image_urls.append(item['image_url']['url'])
+                if (
+                    item.get("type") == "image_url"
+                    and "image_url" in item
+                    and "url" in item["image_url"]
+                ):
+                    image_urls.append(item["image_url"]["url"])
 
         # If no question content found
         if not question.strip() and not image_urls:
@@ -347,7 +353,10 @@ class Pipe:
 
             # Log message content type
             if image_urls:
-                logger.info(f"Calling n8n webhook at: {webhook_url} with text and {len(image_urls)} images")
+                logger.info(
+                    f"Calling n8n webhook at: {webhook_url} "
+                    f"with text and {len(image_urls)} images"
+                )
             else:
                 logger.info(f"Calling n8n webhook at: {webhook_url} with text only")
 
@@ -361,7 +370,7 @@ class Pipe:
                     await self.emit_status(
                         __event_emitter__,
                         "info",
-                        f"Attempt {retry_count + 1}/{self.valves.max_retries + 1}",  # NOQA
+                        f"Attempt {retry_count + 1}/" f"{self.valves.max_retries + 1}",
                         False,
                     )
 
@@ -378,48 +387,62 @@ class Pipe:
                         # Add image files directly from image_urls
                         for idx, image_url in enumerate(image_urls):
                             # Handle data URLs
-                            if image_url.startswith('data:'):
+                            if image_url.startswith("data:"):
                                 # Extract mime type and content
-                                mime_type = image_url.split(';')[0].split(':')[1]
-                                file_ext = '.jpg' if 'jpeg' in mime_type else '.' + mime_type.split('/')[-1]
+                                mime_type = image_url.split(";")[0].split(":")[1]
+                                file_ext = (
+                                    ".jpg"
+                                    if "jpeg" in mime_type
+                                    else "." + mime_type.split("/")[-1]
+                                )
                                 try:
                                     # Extract base64 content
-                                    encoded_data = image_url.split(',')[1]
+                                    encoded_data = image_url.split(",")[1]
                                     image_data = base64.b64decode(encoded_data)
                                     # Add to files list for multipart upload
-                                    files.append((f"image_{idx}", (f"image_{idx}{file_ext}", io.BytesIO(image_data), mime_type)))
+                                    files.append(
+                                        (
+                                            f"image_{idx}",
+                                            (
+                                                f"image_{idx}{file_ext}",
+                                                io.BytesIO(image_data),
+                                                mime_type,
+                                            ),
+                                        )
+                                    )
                                     logger.debug(f"Added image_{idx} from data URL")
                                 except Exception as e:
                                     logger.error(f"Failed to process image data URL: {str(e)}")
 
-                        # Update content type for multipart/form-data (don't specify it, httpx will set it automatically)
-                        form_headers = {
-                            "Authorization": f"Bearer {self.valves.n8n_bearer_token}"
-                        }
+                        # Update content type for multipart/form-data
+                        # (don't specify it, httpx will set it automatically)
+                        form_headers = {"Authorization": f"Bearer {self.valves.n8n_bearer_token}"}
 
                         # Send multipart/form-data request
                         response = await self._http_client.post(
                             webhook_url,
                             data=form_data,
                             files=files,
-                            headers=form_headers
+                            headers=form_headers,
                         )
                     else:
                         # No images, use standard JSON request
                         response = await self._http_client.post(
-                            webhook_url, json=payload, headers=headers,
+                            webhook_url,
+                            json=payload,
+                            headers=headers,
                         )
 
                     # Check status code
                     if response.status_code == 200:
                         response_json = response.json()
                         if self.valves.response_field in response_json:
-                            n8n_response = response_json[self.valves.response_field]  # NOQA
+                            n8n_response = response_json[self.valves.response_field]
                             break
                         else:
                             raise KeyError(
-                                f"Response field '{self.valves.response_field}'"  # NOQA
-                                " not found in N8N response"
+                                f"Response field '{self.valves.response_field}' "
+                                "not found in N8N response"
                             )
                     else:
                         raise httpx.HTTPStatusError(
@@ -442,14 +465,14 @@ class Pipe:
 
             # If we've exhausted retries
             if n8n_response is None and last_error is not None:
-                return await self._handle_http_error(last_error, __event_emitter__)  # NOQA
+                return await self._handle_http_error(last_error, __event_emitter__)
 
             # Set assistant message with workflow reply
-            body["messages"].append({"role": "assistant", "content": n8n_response})  # NOQA
+            body["messages"].append({"role": "assistant", "content": n8n_response})
 
             # Limit history if configured
-            if (0 < self.valves.history_limit < len(body["messages"])):  # NOQA
-                body["messages"] = body["messages"][-self.valves.history_limit :]  # NOQA
+            if 0 < self.valves.history_limit < len(body["messages"]):
+                body["messages"] = body["messages"][-self.valves.history_limit :]
 
             await self.emit_status(__event_emitter__, "info", "Complete", True)
             return n8n_response
