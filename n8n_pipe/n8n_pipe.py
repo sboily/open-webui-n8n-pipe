@@ -9,11 +9,13 @@ funding_url: https://github.com/sboily/open-webui-n8n-pipe
 version: 0.2
 """
 
+import asyncio
 import base64
 import io
 import logging
+import re
 import time
-from typing import Any, Awaitable, Callable, Dict, Optional, Union
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple, Union
 from urllib.parse import urljoin
 
 # Add type stubs for missing libraries
@@ -27,6 +29,8 @@ except ImportError:
 
 # Configure logger
 logger = logging.getLogger(__name__)
+
+WEBHOOK_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_-]+$")
 
 
 class Pipe:
@@ -48,10 +52,12 @@ class Pipe:
             description="Webhook ID from n8n",
         )
         n8n_test_mode: bool = Field(
-            default=False, description="Whether to use test mode URLs for n8n webhooks"  # NOQA
+            default=False,
+            description="Whether to use test mode URLs for n8n webhooks",
         )
         n8n_bearer_token: str = Field(
-            default="your-token-here", description="Bearer token for n8n authentication"  # NOQA
+            default="your-token-here",
+            description="Bearer token for n8n authentication",
         )
         input_field: str = Field(
             default="chatInput",
@@ -62,19 +68,24 @@ class Pipe:
             description="Field name for the output in the response JSON",
         )
         emit_interval: float = Field(
-            default=2.0, description="Interval in seconds between status emissions"  # NOQA
+            default=2.0,
+            description="Interval in seconds between status emissions",
         )
         enable_status_indicator: bool = Field(
-            default=True, description="Enable or disable status indicator emissions"  # NOQA
+            default=True,
+            description="Enable or disable status indicator emissions",
         )
         timeout: float = Field(
-            default=30.0, description="Timeout for HTTP requests in seconds"
-        )  # NOQA
+            default=30.0,
+            description="Timeout for HTTP requests in seconds",
+        )
         max_retries: int = Field(
-            default=2, description="Maximum number of retries for failed requests"  # NOQA
+            default=2,
+            description="Maximum number of retries for failed requests",
         )
         history_limit: int = Field(
-            default=10, description="Maximum number of messages to include in history"  # NOQA
+            default=10,
+            description="Maximum number of messages to include in history",
         )
 
         @field_validator("n8n_host")
@@ -92,7 +103,28 @@ class Pipe:
                 ValueError: If the URL does not start with http:// or https://
             """
             if not v.startswith(("http://", "https://")):
-                raise ValueError("n8n_host must start with http:// or https://")  # NOQA
+                raise ValueError("n8n_host must start with http:// or https://")
+            return v
+
+        @field_validator("n8n_webhook_id")
+        @classmethod
+        def validate_webhook_id(cls, v: str) -> str:
+            """Validate that the webhook ID contains only safe characters.
+
+            Args:
+                v: The webhook ID to validate
+
+            Returns:
+                The validated webhook ID
+
+            Raises:
+                ValueError: If the webhook ID contains unsafe characters
+            """
+            if not WEBHOOK_ID_PATTERN.match(v):
+                raise ValueError(
+                    "n8n_webhook_id must contain only alphanumeric "
+                    "characters, hyphens, and underscores"
+                )
             return v
 
     def __init__(self) -> None:
@@ -102,8 +134,18 @@ class Pipe:
         self.name = "N8N Pipe"
         self.valves = self.Valves()
         self.last_emit_time: float = 0.0
-        self._http_client = httpx.AsyncClient(timeout=self.valves.timeout)
-        logger.info(f"Initialized {self.name}")
+        self._http_client: Optional[httpx.AsyncClient] = None
+        logger.info("Initialized %s", self.name)
+
+    def _get_http_client(self) -> httpx.AsyncClient:
+        """Get or create the HTTP client with current timeout settings.
+
+        Returns:
+            An httpx.AsyncClient configured with the current timeout
+        """
+        if self._http_client is None or self._http_client.is_closed:
+            self._http_client = httpx.AsyncClient(timeout=self.valves.timeout)
+        return self._http_client
 
     async def __aenter__(self) -> "Pipe":
         """Async context manager entry method.
@@ -114,7 +156,7 @@ class Pipe:
         logger.debug("Entering async context")
         return self
 
-    async def __aexit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:  # NOQA
+    async def __aexit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
         """Async context manager exit method, closes the HTTP client.
 
         Args:
@@ -123,7 +165,8 @@ class Pipe:
             exc_tb: Exception traceback, if an exception was raised
         """
         logger.debug("Exiting async context")
-        await self._http_client.aclose()
+        if self._http_client and not self._http_client.is_closed:
+            await self._http_client.aclose()
 
     async def emit_status(
         self,
@@ -145,9 +188,9 @@ class Pipe:
 
         current_time = time.time()
         if self.valves.enable_status_indicator and (
-            current_time - self.last_emit_time >= self.valves.emit_interval or done  # NOQA
+            current_time - self.last_emit_time >= self.valves.emit_interval or done
         ):
-            logger.debug(f"Emitting status: {level} - {message}")
+            logger.debug("Emitting status: %s - %s", level, message)
             await __event_emitter__(
                 {
                     "type": "status",
@@ -171,9 +214,7 @@ class Pipe:
         base_url = self.valves.n8n_host.rstrip("/")
         webhook_id = self.valves.n8n_webhook_id
         path = (
-            f"/webhook-test/{webhook_id}"
-            if self.valves.n8n_test_mode
-            else f"/webhook/{webhook_id}"  # NOQA
+            f"/webhook-test/{webhook_id}" if self.valves.n8n_test_mode else f"/webhook/{webhook_id}"
         )
         return urljoin(f"{base_url}/", path.lstrip("/"))
 
@@ -181,7 +222,8 @@ class Pipe:
         """Extract the actual question from the content.
 
         Args:
-            content: The message content to process, either a string or a list
+            content: The message content to process, either a string
+                     or a list
 
         Returns:
             The cleaned question string
@@ -196,9 +238,11 @@ class Pipe:
 
         # Handle string content
         if isinstance(content, str):
-            return content.split("Prompt: ")[-1] if "Prompt: " in content else content
+            if "Prompt: " in content:
+                return content.split("Prompt: ")[-1]
+            return content
 
-        return ""  # Return empty string if content is neither string nor list
+        return ""
 
     def _create_session_id(
         self,
@@ -239,7 +283,7 @@ class Pipe:
             Error response dictionary
         """
         error_msg = str(error)
-        logger.error(f"Error in n8n pipe: {error_msg}")
+        logger.error("Error in n8n pipe: %s", error_msg)
 
         await self.emit_status(
             __event_emitter__,
@@ -263,12 +307,13 @@ class Pipe:
             body: Request body containing messages
             __user__: User information (optional)
             __event_emitter__: Callable to emit status events
-            __event_call__: Callable for event calls
+            __event_call__: Callable for event calls (reserved for
+                Open-WebUI interface compatibility)
 
         Returns:
             N8N response or error dictionary
         """
-        await self.emit_status(__event_emitter__, "info", "Calling N8N Workflow...", False)  # NOQA
+        await self.emit_status(__event_emitter__, "info", "Calling N8N Workflow...", False)
 
         messages = body.get("messages", [])
 
@@ -298,12 +343,11 @@ class Pipe:
                 True,
             )
             error_message = "The last message must be from a user"
-            body["messages"].append({"role": "assistant", "content": error_message})  # NOQA
+            body["messages"].append({"role": "assistant", "content": error_message})
             return {"error": error_message}
 
         # Extract content from the last message
         question_parts = last_message.get("content", "")
-        # Pass the content to _extract_question which now handles both formats
         question = self._extract_question(question_parts)
 
         # Extract image URLs if present
@@ -326,7 +370,7 @@ class Pipe:
                 True,
             )
             error_message = "Please provide a non-empty question"
-            body["messages"].append({"role": "assistant", "content": error_message})  # NOQA
+            body["messages"].append({"role": "assistant", "content": error_message})
             return {"error": error_message}
 
         try:
@@ -336,7 +380,7 @@ class Pipe:
                 first_message_content = messages[0]["content"]
 
             # Create session ID
-            session_id = self._create_session_id(__user__, first_message_content)  # NOQA
+            session_id = self._create_session_id(__user__, first_message_content)
 
             # Prepare the payload
             payload = {"sessionId": session_id}
@@ -344,7 +388,7 @@ class Pipe:
 
             # Get headers
             headers = {
-                "Authorization": f"Bearer {self.valves.n8n_bearer_token}",
+                "Authorization": (f"Bearer {self.valves.n8n_bearer_token}"),
                 "Content-Type": "application/json",
             }
 
@@ -354,11 +398,18 @@ class Pipe:
             # Log message content type
             if image_urls:
                 logger.info(
-                    f"Calling n8n webhook at: {webhook_url} "
-                    f"with text and {len(image_urls)} images"
+                    "Calling n8n webhook at: %s with text and %d image(s)",
+                    webhook_url,
+                    len(image_urls),
                 )
             else:
-                logger.info(f"Calling n8n webhook at: {webhook_url} with text only")
+                logger.info(
+                    "Calling n8n webhook at: %s with text only",
+                    webhook_url,
+                )
+
+            # Get HTTP client (lazy initialization)
+            http_client = self._get_http_client()
 
             # Try request with retries
             n8n_response: Optional[str] = None
@@ -376,58 +427,15 @@ class Pipe:
 
                     # Use httpx for async HTTP request
                     if image_urls:
-                        # When images are present, use form data instead of JSON
-                        form_data = {}
-                        files = []
-
-                        # Add text fields to form data
-                        form_data["sessionId"] = session_id
-                        form_data[self.valves.input_field] = question
-
-                        # Add image files directly from image_urls
-                        for idx, image_url in enumerate(image_urls):
-                            # Handle data URLs
-                            if image_url.startswith("data:"):
-                                # Extract mime type and content
-                                mime_type = image_url.split(";")[0].split(":")[1]
-                                file_ext = (
-                                    ".jpg"
-                                    if "jpeg" in mime_type
-                                    else "." + mime_type.split("/")[-1]
-                                )
-                                try:
-                                    # Extract base64 content
-                                    encoded_data = image_url.split(",")[1]
-                                    image_data = base64.b64decode(encoded_data)
-                                    # Add to files list for multipart upload
-                                    files.append(
-                                        (
-                                            f"image_{idx}",
-                                            (
-                                                f"image_{idx}{file_ext}",
-                                                io.BytesIO(image_data),
-                                                mime_type,
-                                            ),
-                                        )
-                                    )
-                                    logger.debug(f"Added image_{idx} from data URL")
-                                except Exception as e:
-                                    logger.error(f"Failed to process image data URL: {str(e)}")
-
-                        # Update content type for multipart/form-data
-                        # (don't specify it, httpx will set it automatically)
-                        form_headers = {"Authorization": f"Bearer {self.valves.n8n_bearer_token}"}
-
-                        # Send multipart/form-data request
-                        response = await self._http_client.post(
+                        response = await self._send_with_images(
+                            http_client,
                             webhook_url,
-                            data=form_data,
-                            files=files,
-                            headers=form_headers,
+                            session_id,
+                            question,
+                            image_urls,
                         )
                     else:
-                        # No images, use standard JSON request
-                        response = await self._http_client.post(
+                        response = await http_client.post(
                             webhook_url,
                             json=payload,
                             headers=headers,
@@ -441,12 +449,13 @@ class Pipe:
                             break
                         else:
                             raise KeyError(
-                                f"Response field '{self.valves.response_field}' "
+                                f"Response field "
+                                f"'{self.valves.response_field}' "
                                 "not found in N8N response"
                             )
                     else:
                         raise httpx.HTTPStatusError(
-                            f"Error: {response.status_code} - {response.text}",
+                            f"Error: {response.status_code}" f" - {response.text}",
                             request=response.request,
                             response=response,
                         )
@@ -458,10 +467,10 @@ class Pipe:
                         await self.emit_status(
                             __event_emitter__,
                             "warning",
-                            f"Retry {retry_count}/{self.valves.max_retries}",
+                            f"Retry {retry_count}/" f"{self.valves.max_retries}",
                             False,
                         )
-                        time.sleep(1)  # Simple backoff
+                        await asyncio.sleep(1)
 
             # If we've exhausted retries
             if n8n_response is None and last_error is not None:
@@ -479,3 +488,113 @@ class Pipe:
 
         except Exception as e:
             return await self._handle_http_error(e, __event_emitter__)
+
+    async def _send_with_images(
+        self,
+        http_client: httpx.AsyncClient,
+        webhook_url: str,
+        session_id: str,
+        question: str,
+        image_urls: list,
+    ) -> httpx.Response:
+        """Send a multipart request with images to the webhook.
+
+        Args:
+            http_client: The HTTP client to use
+            webhook_url: The webhook URL to send to
+            session_id: The session identifier
+            question: The text question
+            image_urls: List of image URLs (data: or http(s)://)
+
+        Returns:
+            The HTTP response from n8n
+        """
+        form_data: Dict[str, str] = {}
+        files: List[Tuple[str, Tuple[str, io.BytesIO, str]]] = []
+
+        # Add text fields to form data
+        form_data["sessionId"] = session_id
+        form_data[self.valves.input_field] = question
+
+        # Add image files from image_urls
+        for idx, image_url in enumerate(image_urls):
+            if image_url.startswith("data:"):
+                self._process_data_url(image_url, idx, files)
+            elif image_url.startswith(("http://", "https://")):
+                await self._download_and_attach(http_client, image_url, idx, files)
+            else:
+                logger.warning(
+                    "Unsupported image URL scheme for image_%d, " "skipping",
+                    idx,
+                )
+
+        form_headers = {"Authorization": (f"Bearer {self.valves.n8n_bearer_token}")}
+
+        return await http_client.post(
+            webhook_url,
+            data=form_data,
+            files=files,
+            headers=form_headers,
+        )
+
+    def _process_data_url(self, image_url: str, idx: int, files: list) -> None:
+        """Process a data: URL and append to the files list.
+
+        Args:
+            image_url: The data: URL to process
+            idx: The image index
+            files: The files list to append to
+        """
+        mime_type = image_url.split(";")[0].split(":")[1]
+        file_ext = ".jpg" if "jpeg" in mime_type else "." + mime_type.split("/")[-1]
+        try:
+            encoded_data = image_url.split(",")[1]
+            image_data = base64.b64decode(encoded_data)
+            files.append(
+                (
+                    f"image_{idx}",
+                    (
+                        f"image_{idx}{file_ext}",
+                        io.BytesIO(image_data),
+                        mime_type,
+                    ),
+                )
+            )
+            logger.debug("Added image_%d from data URL", idx)
+        except Exception as e:
+            logger.error("Failed to process image data URL: %s", str(e))
+
+    async def _download_and_attach(
+        self,
+        http_client: httpx.AsyncClient,
+        image_url: str,
+        idx: int,
+        files: list,
+    ) -> None:
+        """Download an image from a URL and attach it to the files list.
+
+        Args:
+            http_client: The HTTP client to use for downloading
+            image_url: The HTTP(S) URL to download from
+            idx: The image index
+            files: The files list to append to
+        """
+        try:
+            resp = await http_client.get(image_url)
+            resp.raise_for_status()
+            content_type = resp.headers.get("content-type", "image/png")
+            mime_type = content_type.split(";")[0].strip()
+            file_ext = "." + mime_type.split("/")[-1]
+            files.append(
+                (
+                    f"image_{idx}",
+                    (
+                        f"image_{idx}{file_ext}",
+                        io.BytesIO(resp.content),
+                        mime_type,
+                    ),
+                )
+            )
+            logger.debug("Added image_%d from remote URL", idx)
+        except Exception as e:
+            logger.error("Failed to download image from URL: %s", str(e))

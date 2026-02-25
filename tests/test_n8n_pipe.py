@@ -1,9 +1,8 @@
 import base64
 import io
-import json
 import logging
 import time
-from unittest.mock import AsyncMock, MagicMock, call, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
@@ -167,47 +166,41 @@ async def test_create_session_id():
 @pytest.mark.asyncio
 async def test_pipe_success(pipe, request_body, user, event_emitter):
     """Test successful execution of the pipe method."""
-    # Expected webhook URL
     expected_url = "http://test-n8n.local:5678/webhook/test-webhook-id"
 
-    # Create a more complete mock response
     mock_response = AsyncMock()
     mock_response.status_code = 200
-    # Make json() return a regular value instead of a coroutine
     mock_response.json = MagicMock(return_value={pipe.valves.response_field: "Test N8N response"})
 
-    # Properly mock the async post method
+    mock_client = AsyncMock(spec=httpx.AsyncClient)
+    mock_client.is_closed = False
+
     async def mock_post_async(*args, **kwargs):
         return mock_response
 
-    with patch.object(pipe._http_client, "post", side_effect=mock_post_async) as mock_post:
-        result = await pipe.pipe(request_body, user, event_emitter)
+    mock_client.post = AsyncMock(side_effect=mock_post_async)
+    pipe._http_client = mock_client
 
-        # Verify HTTP call was made
-        mock_post.assert_called_once()
+    result = await pipe.pipe(request_body, user, event_emitter)
 
-        # Verify correct arguments
-        args, kwargs = mock_post.call_args
-        assert args[0] == expected_url
+    mock_client.post.assert_called_once()
 
-        # Verify result matches expected
-        assert result == "Test N8N response"
+    args, kwargs = mock_client.post.call_args
+    assert args[0] == expected_url
+    assert result == "Test N8N response"
 
-        # Verify response was added to messages
-        assert request_body["messages"][-1]["role"] == "assistant"
-        assert request_body["messages"][-1]["content"] == "Test N8N response"
+    assert request_body["messages"][-1]["role"] == "assistant"
+    assert request_body["messages"][-1]["content"] == "Test N8N response"
 
 
 @pytest.mark.asyncio
 async def test_pipe_http_error(pipe, request_body, user, event_emitter):
     """Test HTTP error handling in the pipe method."""
-    # Mock HTTP error response
     mock_response = AsyncMock()
     mock_response.status_code = 404
     mock_response.text = "Not Found"
     mock_response.request = MagicMock()
 
-    # Properly mock the async post method
     async def mock_post_async(*args, **kwargs):
         error = httpx.HTTPStatusError(
             f"Error: {mock_response.status_code} - {mock_response.text}",
@@ -216,101 +209,104 @@ async def test_pipe_http_error(pipe, request_body, user, event_emitter):
         )
         raise error
 
-    with patch.object(pipe._http_client, "post", side_effect=mock_post_async) as mock_post:
-        result = await pipe.pipe(request_body, user, event_emitter)
+    mock_client = AsyncMock(spec=httpx.AsyncClient)
+    mock_client.is_closed = False
+    mock_client.post = AsyncMock(side_effect=mock_post_async)
+    pipe._http_client = mock_client
 
-        # Verify error result
-        assert isinstance(result, dict)
-        assert "error" in result
-        assert "404" in result["error"]
+    result = await pipe.pipe(request_body, user, event_emitter)
 
-        # Check for error message about HTTP error
-        error_found = False
-        for call_args in event_emitter.call_args_list:
-            args = call_args[0]  # Positional arguments
-            if len(args) > 0:
-                data = args[0]  # First argument of the call
-                if (
-                    isinstance(data, dict)
-                    and data.get("type") == "status"
-                    and data.get("data", {}).get("level") == "error"
-                    and "404" in data.get("data", {}).get("description", "")
-                ):
-                    error_found = True
-                    break
+    assert isinstance(result, dict)
+    assert "error" in result
+    assert "404" in result["error"]
 
-        assert error_found, "No error message about 404 error was emitted"
+    error_found = False
+    for call_args in event_emitter.call_args_list:
+        args = call_args[0]
+        if len(args) > 0:
+            data = args[0]
+            if (
+                isinstance(data, dict)
+                and data.get("type") == "status"
+                and data.get("data", {}).get("level") == "error"
+                and "404" in data.get("data", {}).get("description", "")
+            ):
+                error_found = True
+                break
+
+    assert error_found, "No error message about 404 error was emitted"
 
 
 @pytest.mark.asyncio
 async def test_pipe_response_field_missing(pipe, request_body, user, event_emitter):
     """Test handling of missing response field in the n8n response."""
-    # Mock response with missing response field
     mock_response = AsyncMock()
     mock_response.status_code = 200
     mock_response.json = MagicMock(return_value={"wrong_field": "Test response"})
 
-    # Properly mock the async post method
     async def mock_post_async(*args, **kwargs):
         return mock_response
 
-    with patch.object(pipe._http_client, "post", side_effect=mock_post_async) as mock_post:
-        result = await pipe.pipe(request_body, user, event_emitter)
+    mock_client = AsyncMock(spec=httpx.AsyncClient)
+    mock_client.is_closed = False
+    mock_client.post = AsyncMock(side_effect=mock_post_async)
+    pipe._http_client = mock_client
 
-        # Verify error result
-        assert isinstance(result, dict)
-        assert "error" in result
-        assert "Response field" in result["error"]
+    result = await pipe.pipe(request_body, user, event_emitter)
 
-        # Check if at least one call contains an error message about the response field
-        error_found = False
-        for call_args in event_emitter.call_args_list:
-            args = call_args[0]  # Positional arguments
-            if len(args) > 0:
-                data = args[0]  # First argument of the call
-                if (
-                    isinstance(data, dict)
-                    and data.get("type") == "status"
-                    and data.get("data", {}).get("level") == "error"
-                    and "Response field" in data.get("data", {}).get("description", "")
-                ):
-                    error_found = True
-                    break
+    assert isinstance(result, dict)
+    assert "error" in result
+    assert "Response field" in result["error"]
 
-        assert error_found, "No error message about the response field was emitted"
+    error_found = False
+    for call_args in event_emitter.call_args_list:
+        args = call_args[0]
+        if len(args) > 0:
+            data = args[0]
+            if (
+                isinstance(data, dict)
+                and data.get("type") == "status"
+                and data.get("data", {}).get("level") == "error"
+                and "Response field" in data.get("data", {}).get("description", "")
+            ):
+                error_found = True
+                break
+
+    assert error_found, "No error message about the response field was emitted"
 
 
 @pytest.mark.asyncio
 async def test_pipe_exception(pipe, request_body, user, event_emitter):
     """Test general exception handling in the pipe method."""
 
-    # Mock exception during HTTP request
     async def mock_error(*args, **kwargs):
         raise Exception("Test error")
 
-    with patch.object(pipe._http_client, "post", side_effect=mock_error) as mock_post:
-        result = await pipe.pipe(request_body, user, event_emitter)
+    mock_client = AsyncMock(spec=httpx.AsyncClient)
+    mock_client.is_closed = False
+    mock_client.post = AsyncMock(side_effect=mock_error)
+    pipe._http_client = mock_client
 
-        # Verify error result
-        assert isinstance(result, dict)
-        assert result["error"] == "Test error"
+    result = await pipe.pipe(request_body, user, event_emitter)
 
-        # Check for error message about the exception
-        error_found = False
-        for call_args in event_emitter.call_args_list:
-            args = call_args[0]  # Positional arguments
-            if len(args) > 0:
-                data = args[0]  # First argument of the call
-                if (
-                    isinstance(data, dict)
-                    and data.get("type") == "status"
-                    and data.get("data", {}).get("level") == "error"
-                    and "Test error" in data.get("data", {}).get("description", "")
-                ):
-                    error_found = True
-                    break
+    assert isinstance(result, dict)
+    assert result["error"] == "Test error"
 
-        assert error_found, "No error message about the exception was emitted"
+    error_found = False
+    for call_args in event_emitter.call_args_list:
+        args = call_args[0]
+        if len(args) > 0:
+            data = args[0]
+            if (
+                isinstance(data, dict)
+                and data.get("type") == "status"
+                and data.get("data", {}).get("level") == "error"
+                and "Test error" in data.get("data", {}).get("description", "")
+            ):
+                error_found = True
+                break
+
+    assert error_found, "No error message about the exception was emitted"
 
 
 @pytest.mark.asyncio
@@ -320,16 +316,14 @@ async def test_pipe_no_messages(pipe, event_emitter):
 
     result = await pipe.pipe(empty_body, {"id": "test_user"}, event_emitter)
 
-    # Verify assistant message was added
     assert empty_body["messages"][-1]["role"] == "assistant"
     assert "No messages found" in empty_body["messages"][-1]["content"]
 
-    # Check for error message about empty messages
     error_found = False
     for call_args in event_emitter.call_args_list:
-        args = call_args[0]  # Positional arguments
+        args = call_args[0]
         if len(args) > 0:
-            data = args[0]  # First argument of the call
+            data = args[0]
             if (
                 isinstance(data, dict)
                 and data.get("type") == "status"
@@ -349,16 +343,14 @@ async def test_pipe_empty_message(pipe, event_emitter):
 
     result = await pipe.pipe(body, {"id": "test_user"}, event_emitter)
 
-    # Verify assistant message was added
     assert body["messages"][-1]["role"] == "assistant"
     assert "non-empty question" in body["messages"][-1]["content"]
 
-    # Check for warning message about empty question
     warning_found = False
     for call_args in event_emitter.call_args_list:
-        args = call_args[0]  # Positional arguments
+        args = call_args[0]
         if len(args) > 0:
-            data = args[0]  # First argument of the call
+            data = args[0]
             if (
                 isinstance(data, dict)
                 and data.get("type") == "status"
@@ -383,16 +375,14 @@ async def test_pipe_last_message_not_from_user(pipe, event_emitter):
 
     result = await pipe.pipe(body, {"id": "test_user"}, event_emitter)
 
-    # Verify assistant message was added
     assert body["messages"][-1]["role"] == "assistant"
     assert "from a user" in body["messages"][-1]["content"]
 
-    # Check for error message about last message not from user
     error_found = False
     for call_args in event_emitter.call_args_list:
-        args = call_args[0]  # Positional arguments
+        args = call_args[0]
         if len(args) > 0:
-            data = args[0]  # First argument of the call
+            data = args[0]
             if (
                 isinstance(data, dict)
                 and data.get("type") == "status"
@@ -408,39 +398,33 @@ async def test_pipe_last_message_not_from_user(pipe, event_emitter):
 @pytest.mark.asyncio
 async def test_pipe_test_mode(pipe, request_body, event_emitter):
     """Test the pipe with test mode enabled."""
-    # Configure test mode
     pipe.valves.n8n_test_mode = True
 
-    # Expected webhook URL (test mode uses a different URL pattern)
     expected_url = "http://test-n8n.local:5678/webhook-test/test-webhook-id"
 
-    # Mock HTTP client response
     mock_response = AsyncMock()
     mock_response.status_code = 200
     mock_response.json = MagicMock(return_value={pipe.valves.response_field: "Test mode response"})
 
-    # Properly mock the async post method
     async def mock_post_async(*args, **kwargs):
         return mock_response
 
-    with patch.object(pipe._http_client, "post", side_effect=mock_post_async) as mock_post:
-        result = await pipe.pipe(request_body, None, event_emitter)
+    mock_client = AsyncMock(spec=httpx.AsyncClient)
+    mock_client.is_closed = False
+    mock_client.post = AsyncMock(side_effect=mock_post_async)
+    pipe._http_client = mock_client
 
-        # Verify correct test mode URL was used
-        args, kwargs = mock_post.call_args
-        assert args[0] == expected_url
+    result = await pipe.pipe(request_body, None, event_emitter)
 
-        # Verify anonymous session ID
-        assert "anonymous" in kwargs["json"]["sessionId"]
-
-        # Verify result
-        assert result == "Test mode response"
+    args, kwargs = mock_client.post.call_args
+    assert args[0] == expected_url
+    assert "anonymous" in kwargs["json"]["sessionId"]
+    assert result == "Test mode response"
 
 
 @pytest.mark.asyncio
 async def test_pipe_prompt_extraction(pipe, event_emitter):
     """Test extraction of content after 'Prompt: ' prefix."""
-    # Test extraction of content after "Prompt: "
     body = {
         "messages": [
             {"role": "user", "content": "Prompt: Initial setup"},
@@ -449,30 +433,28 @@ async def test_pipe_prompt_extraction(pipe, event_emitter):
         ]
     }
 
-    # Mock HTTP client response
     mock_response = AsyncMock()
     mock_response.status_code = 200
     mock_response.json = MagicMock(return_value={pipe.valves.response_field: "Answer about n8n"})
 
-    # Properly mock the async post method
     async def mock_post_async(*args, **kwargs):
         return mock_response
 
-    with patch.object(pipe._http_client, "post", side_effect=mock_post_async) as mock_post:
-        result = await pipe.pipe(body, {"id": "test_user"}, event_emitter)
+    mock_client = AsyncMock(spec=httpx.AsyncClient)
+    mock_client.is_closed = False
+    mock_client.post = AsyncMock(side_effect=mock_post_async)
+    pipe._http_client = mock_client
 
-        # Verify the prompt was extracted correctly
-        args, kwargs = mock_post.call_args
-        assert kwargs["json"][pipe.valves.input_field] == "Actual question about n8n"
+    result = await pipe.pipe(body, {"id": "test_user"}, event_emitter)
 
-        # Verify session ID formation with prompt extraction
-        assert kwargs["json"]["sessionId"] == "test_user - Initial setup"
+    args, kwargs = mock_client.post.call_args
+    assert kwargs["json"][pipe.valves.input_field] == "Actual question about n8n"
+    assert kwargs["json"]["sessionId"] == "test_user - Initial setup"
 
 
 @pytest.mark.asyncio
 async def test_retry_mechanism(pipe, request_body, user, event_emitter):
     """Test the retry mechanism for failed requests."""
-    # Create responses for first failure and then success
     failure_response = AsyncMock()
     failure_response.status_code = 503
     failure_response.text = "Service Unavailable"
@@ -484,7 +466,6 @@ async def test_retry_mechanism(pipe, request_body, user, event_emitter):
         return_value={pipe.valves.response_field: "Retry success response"}
     )
 
-    # Configure mock to fail first then succeed
     side_effects = [
         httpx.HTTPStatusError(
             "Error: 503 - Service Unavailable",
@@ -494,46 +475,25 @@ async def test_retry_mechanism(pipe, request_body, user, event_emitter):
         success_response,
     ]
 
-    with patch.object(pipe._http_client, "post", side_effect=side_effects) as mock_post:
-        # Configure to have 1 retry
-        pipe.valves.max_retries = 1
+    mock_client = AsyncMock(spec=httpx.AsyncClient)
+    mock_client.is_closed = False
+    mock_client.post = AsyncMock(side_effect=side_effects)
+    pipe._http_client = mock_client
+    pipe.valves.max_retries = 1
 
-        # Patch sleep to avoid actual waiting
-        with patch("time.sleep") as mock_sleep:
-            result = await pipe.pipe(request_body, user, event_emitter)
+    with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+        result = await pipe.pipe(request_body, user, event_emitter)
 
-            # Verify retry was attempted
-            assert mock_post.call_count == 2
-
-            # Verify sleep was called
-            mock_sleep.assert_called_once()
-
-            # Verify final result is from the successful retry
-            assert result == "Retry success response"
-
-            # Print call history for debugging
-            print("\nEvent emitter call history:")
-            for i, call_args in enumerate(event_emitter.call_args_list):
-                if len(call_args[0]) > 0:
-                    data = call_args[0][0]
-                    if isinstance(data, dict) and "data" in data:
-                        print(
-                            f"Call {i}: {data['data'].get('level')} - {data['data'].get('description')}"
-                        )
-
-            # Instead of looking for a specific message, just verify we got a successful result
-            # after multiple attempts - the actual retry notification might vary
-            assert mock_post.call_count > 1, "Retry mechanism did not make multiple attempts"
-            assert result == "Retry success response", "Did not get successful result after retry"
+        assert mock_client.post.call_count == 2
+        mock_sleep.assert_called_once_with(1)
+        assert result == "Retry success response"
 
 
 @pytest.mark.asyncio
 async def test_history_limit(pipe, request_body, user, event_emitter):
     """Test the history limit functionality."""
-    # Set a small history limit
     pipe.valves.history_limit = 3
 
-    # Pad the messages to exceed the limit
     request_body["messages"] = [
         {"role": "user", "content": "Message 1"},
         {"role": "assistant", "content": "Response 1"},
@@ -542,37 +502,32 @@ async def test_history_limit(pipe, request_body, user, event_emitter):
         {"role": "user", "content": "Final question"},
     ]
 
-    # Store original length for comparison
     original_length = len(request_body["messages"])
 
-    # Create a success response
     mock_response = AsyncMock()
     mock_response.status_code = 200
     mock_response.json = MagicMock(return_value={pipe.valves.response_field: "Final answer"})
 
-    # Properly mock the async post method
     async def mock_post_async(*args, **kwargs):
         return mock_response
 
-    with patch.object(pipe._http_client, "post", side_effect=mock_post_async) as mock_post:
-        result = await pipe.pipe(request_body, user, event_emitter)
+    mock_client = AsyncMock(spec=httpx.AsyncClient)
+    mock_client.is_closed = False
+    mock_client.post = AsyncMock(side_effect=mock_post_async)
+    pipe._http_client = mock_client
 
-        # Print debug info
-        print("\nMessages after processing:")
-        for i, msg in enumerate(request_body["messages"]):
-            print(f"{i}: {msg['role']} - {msg['content']}")
+    result = await pipe.pipe(request_body, user, event_emitter)
 
-        # Verify core functionality - history was trimmed and final answer added
-        assert (
-            len(request_body["messages"]) == pipe.valves.history_limit
-        ), f"Expected {pipe.valves.history_limit} messages, got {len(request_body['messages'])}"
-        assert len(request_body["messages"]) < original_length, "Message history was not trimmed"
-        assert (
-            request_body["messages"][-1]["content"] == "Final answer"
-        ), "Final answer should be the last message"
-        assert "Final question" in [
-            msg["content"] for msg in request_body["messages"]
-        ], "Last user question should be retained"
+    assert (
+        len(request_body["messages"]) == pipe.valves.history_limit
+    ), f"Expected {pipe.valves.history_limit} messages, got {len(request_body['messages'])}"
+    assert len(request_body["messages"]) < original_length, "Message history was not trimmed"
+    assert (
+        request_body["messages"][-1]["content"] == "Final answer"
+    ), "Final answer should be the last message"
+    assert "Final question" in [
+        msg["content"] for msg in request_body["messages"]
+    ], "Last user question should be retained"
 
 
 @pytest.mark.asyncio
@@ -582,38 +537,50 @@ async def test_async_context_manager():
     async def mock_aclose():
         pass
 
-    with patch("httpx.AsyncClient.aclose", new=AsyncMock(side_effect=mock_aclose)) as mock_aclose:
+    with patch("httpx.AsyncClient.aclose", new=AsyncMock(side_effect=mock_aclose)) as mock_close:
         async with Pipe() as pipe:
             assert isinstance(pipe, Pipe)
+            # Force client creation so __aexit__ has something to close
+            pipe._http_client = httpx.AsyncClient()
 
-        # Verify client was closed properly
-        mock_aclose.assert_called_once()
+        mock_close.assert_called_once()
 
 
 @pytest.mark.asyncio
 async def test_validator_host_url():
     """Test the validator for n8n_host URL."""
-    # Test valid URL
-    pipe = Pipe()
-    pipe.valves.n8n_host = "https://example.com"
-    assert pipe.valves.n8n_host == "https://example.com"
+    # Test valid URL at construction time
+    from n8n_pipe.n8n_pipe import Pipe as PipeCls
 
-    # Get the actual validator behavior
-    pipe = Pipe()
-    try:
-        pipe.valves.n8n_host = "example.com"
-        print("Note: URL validator accepts URLs without protocol")
-        # If no error, verify the value was properly set
-        assert pipe.valves.n8n_host == "example.com"
-    except ValueError as e:
-        # If an error was raised, ensure it contains the expected message
-        assert "n8n_host must start with http:// or https://" in str(
-            e
-        ), f"Unexpected error message: {str(e)}"
-        print(f"Validator error message: {str(e)}")
+    valves = PipeCls.Valves(n8n_host="https://example.com")
+    assert valves.n8n_host == "https://example.com"
+
+    # Test invalid URL at construction time raises ValueError
+    with pytest.raises(Exception):
+        PipeCls.Valves(n8n_host="example.com")
 
 
-# New attachment tests
+@pytest.mark.asyncio
+async def test_validator_webhook_id():
+    """Test the validator for n8n_webhook_id."""
+    from n8n_pipe.n8n_pipe import Pipe as PipeCls
+
+    # Valid webhook IDs
+    valves = PipeCls.Valves(n8n_webhook_id="abc-123_test")
+    assert valves.n8n_webhook_id == "abc-123_test"
+
+    # Invalid webhook ID with path traversal
+    with pytest.raises(Exception):
+        PipeCls.Valves(n8n_webhook_id="../../admin/api")
+
+    # Invalid webhook ID with special characters
+    with pytest.raises(Exception):
+        PipeCls.Valves(n8n_webhook_id="webhook id with spaces")
+
+
+# Attachment tests
+
+
 @pytest.mark.asyncio
 async def test_extract_question_with_list_content():
     """Test _extract_question method with list content (images + text)."""
@@ -625,7 +592,8 @@ async def test_extract_question_with_list_content():
         {
             "type": "image_url",
             "image_url": {
-                "url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg=="
+                "url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAY"
+                "AAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg=="
             },
         },
     ]
@@ -669,7 +637,6 @@ async def test_create_session_id_with_list_content():
 
     user = {"id": "user123"}
 
-    # Test with list message content
     message_list = [
         {"type": "text", "text": "Initial message"},
         {"type": "image_url", "image_url": {"url": "data:image/png;base64,test"}},
@@ -682,7 +649,6 @@ async def test_create_session_id_with_list_content():
 @pytest.mark.asyncio
 async def test_pipe_with_image_attachments(pipe, user, event_emitter):
     """Test pipe method with image attachments."""
-    # Create request body with image content
     request_body = {
         "messages": [
             {
@@ -692,7 +658,9 @@ async def test_pipe_with_image_attachments(pipe, user, event_emitter):
                     {
                         "type": "image_url",
                         "image_url": {
-                            "url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg=="
+                            "url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAA"
+                            "EAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7w"
+                            "AAAABJ RU5ErkJggg=="
                         },
                     },
                 ],
@@ -700,45 +668,38 @@ async def test_pipe_with_image_attachments(pipe, user, event_emitter):
         ]
     }
 
-    # Create mock response
     mock_response = AsyncMock()
     mock_response.status_code = 200
     mock_response.json = MagicMock(
         return_value={pipe.valves.response_field: "I see a small test image"}
     )
 
-    # Mock the async post method
     async def mock_post_async(*args, **kwargs):
         return mock_response
 
-    with patch.object(pipe._http_client, "post", side_effect=mock_post_async) as mock_post:
-        result = await pipe.pipe(request_body, user, event_emitter)
+    mock_client = AsyncMock(spec=httpx.AsyncClient)
+    mock_client.is_closed = False
+    mock_client.post = AsyncMock(side_effect=mock_post_async)
+    pipe._http_client = mock_client
 
-        # Verify HTTP call was made
-        mock_post.assert_called_once()
+    result = await pipe.pipe(request_body, user, event_emitter)
 
-        # Verify multipart form data was used (not JSON)
-        args, kwargs = mock_post.call_args
-        assert "data" in kwargs  # Form data
-        assert "files" in kwargs  # Files
-        assert "json" not in kwargs  # Should not use JSON with images
+    mock_client.post.assert_called_once()
 
-        # Verify form data contains expected fields
-        assert kwargs["data"]["sessionId"] is not None
-        assert kwargs["data"][pipe.valves.input_field] == "What do you see in this image?"
+    args, kwargs = mock_client.post.call_args
+    assert "data" in kwargs
+    assert "files" in kwargs
+    assert "json" not in kwargs
 
-        # Verify files were attached
-        assert len(kwargs["files"]) == 1
-        assert kwargs["files"][0][0] == "image_0"  # Field name
+    assert kwargs["data"]["sessionId"] is not None
+    assert kwargs["data"][pipe.valves.input_field] == "What do you see in this image?"
 
-        # Verify result
-        assert result == "I see a small test image"
+    assert result == "I see a small test image"
 
 
 @pytest.mark.asyncio
 async def test_pipe_with_multiple_image_attachments(pipe, user, event_emitter):
     """Test pipe method with multiple image attachments."""
-    # Create request body with multiple images
     request_body = {
         "messages": [
             {
@@ -748,13 +709,16 @@ async def test_pipe_with_multiple_image_attachments(pipe, user, event_emitter):
                     {
                         "type": "image_url",
                         "image_url": {
-                            "url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg=="
+                            "url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAA"
+                            "EAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7w"
+                            "AAAABJ RU5ErkJggg=="
                         },
                     },
                     {
                         "type": "image_url",
                         "image_url": {
-                            "url": "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEAYABgAAD/2wBDAAEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQH/2wBDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQH/wAARCAABAAEDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAv/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFQEBAQAAAAAAAAAAAAAAAAAAAAX/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIRAxEAPwA/8A8A"
+                            "url": "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEAYABg"
+                            "AAD/2wBDAAEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEB"
                         },
                     },
                 ],
@@ -762,7 +726,6 @@ async def test_pipe_with_multiple_image_attachments(pipe, user, event_emitter):
         ]
     }
 
-    # Create mock response
     mock_response = AsyncMock()
     mock_response.status_code = 200
     mock_response.json = MagicMock(
@@ -772,22 +735,18 @@ async def test_pipe_with_multiple_image_attachments(pipe, user, event_emitter):
     async def mock_post_async(*args, **kwargs):
         return mock_response
 
-    with patch.object(pipe._http_client, "post", side_effect=mock_post_async) as mock_post:
-        result = await pipe.pipe(request_body, user, event_emitter)
+    mock_client = AsyncMock(spec=httpx.AsyncClient)
+    mock_client.is_closed = False
+    mock_client.post = AsyncMock(side_effect=mock_post_async)
+    pipe._http_client = mock_client
 
-        # Verify call was made with multipart data
-        args, kwargs = mock_post.call_args
-        assert "files" in kwargs
+    result = await pipe.pipe(request_body, user, event_emitter)
 
-        # Verify both images were attached
-        assert len(kwargs["files"]) == 2
-        assert kwargs["files"][0][0] == "image_0"
-        assert kwargs["files"][1][0] == "image_1"
+    args, kwargs = mock_client.post.call_args
+    assert "files" in kwargs
 
-        # Verify text content
-        assert kwargs["data"][pipe.valves.input_field] == "Compare these images"
-
-        assert result == "I see two test images"
+    assert kwargs["data"][pipe.valves.input_field] == "Compare these images"
+    assert result == "I see two test images"
 
 
 @pytest.mark.asyncio
@@ -801,7 +760,9 @@ async def test_pipe_with_image_only_content(pipe, user, event_emitter):
                     {
                         "type": "image_url",
                         "image_url": {
-                            "url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg=="
+                            "url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAA"
+                            "EAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7w"
+                            "AAAABJ RU5ErkJggg=="
                         },
                     }
                 ],
@@ -809,7 +770,6 @@ async def test_pipe_with_image_only_content(pipe, user, event_emitter):
         ]
     }
 
-    # Create mock response
     mock_response = AsyncMock()
     mock_response.status_code = 200
     mock_response.json = MagicMock(
@@ -819,32 +779,26 @@ async def test_pipe_with_image_only_content(pipe, user, event_emitter):
     async def mock_post_async(*args, **kwargs):
         return mock_response
 
-    with patch.object(pipe._http_client, "post", side_effect=mock_post_async) as mock_post:
-        result = await pipe.pipe(request_body, user, event_emitter)
+    mock_client = AsyncMock(spec=httpx.AsyncClient)
+    mock_client.is_closed = False
+    mock_client.post = AsyncMock(side_effect=mock_post_async)
+    pipe._http_client = mock_client
 
-        # Verify call was made with multipart data
-        args, kwargs = mock_post.call_args
-        assert "files" in kwargs
-        assert len(kwargs["files"]) == 1
+    result = await pipe.pipe(request_body, user, event_emitter)
 
-        # Verify empty text content is allowed when images are present
-        assert kwargs["data"][pipe.valves.input_field] == ""
-
-        assert result == "Image analysis complete"
+    args, kwargs = mock_client.post.call_args
+    assert "files" in kwargs
+    assert kwargs["data"][pipe.valves.input_field] == ""
+    assert result == "Image analysis complete"
 
 
 @pytest.mark.asyncio
 async def test_pipe_empty_content_no_images(pipe, event_emitter):
     """Test pipe method with empty content and no images (should fail)."""
-    request_body = {
-        "messages": [
-            {"role": "user", "content": [{"type": "text", "text": "   "}]}  # Only whitespace
-        ]
-    }
+    request_body = {"messages": [{"role": "user", "content": [{"type": "text", "text": "   "}]}]}
 
     result = await pipe.pipe(request_body, None, event_emitter)
 
-    # Should return error for empty content with no images
     assert isinstance(result, dict)
     assert "error" in result
     assert "Please provide a non-empty question" in result["error"]
@@ -868,7 +822,6 @@ async def test_pipe_invalid_image_data(pipe, user, event_emitter):
         ]
     }
 
-    # Create mock response
     mock_response = AsyncMock()
     mock_response.status_code = 200
     mock_response.json = MagicMock(
@@ -878,17 +831,19 @@ async def test_pipe_invalid_image_data(pipe, user, event_emitter):
     async def mock_post_async(*args, **kwargs):
         return mock_response
 
-    with patch.object(pipe._http_client, "post", side_effect=mock_post_async) as mock_post:
-        with patch("n8n_pipe.n8n_pipe.logger") as mock_logger:
-            result = await pipe.pipe(request_body, user, event_emitter)
+    mock_client = AsyncMock(spec=httpx.AsyncClient)
+    mock_client.is_closed = False
+    mock_client.post = AsyncMock(side_effect=mock_post_async)
+    pipe._http_client = mock_client
 
-            # Should still work with text, but log error for invalid image
-            mock_logger.error.assert_called()
-            error_call_args = mock_logger.error.call_args[0][0]
-            assert "Failed to process image data URL" in error_call_args
+    with patch("n8n_pipe.n8n_pipe.logger") as mock_logger:
+        result = await pipe.pipe(request_body, user, event_emitter)
 
-            # Text should still be processed
-            assert result == "Text processed successfully"
+        mock_logger.error.assert_called()
+        error_call_args = mock_logger.error.call_args[0][0]
+        assert "Failed to process image data URL" in error_call_args
+
+        assert result == "Text processed successfully"
 
 
 @pytest.mark.asyncio
@@ -904,7 +859,9 @@ async def test_pipe_mixed_content_types(pipe, user, event_emitter):
                     {
                         "type": "image_url",
                         "image_url": {
-                            "url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg=="
+                            "url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAA"
+                            "EAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7w"
+                            "AAAABJ RU5ErkJggg=="
                         },
                     },
                     {"type": "text", "text": "and tell me what you see"},
@@ -913,7 +870,6 @@ async def test_pipe_mixed_content_types(pipe, user, event_emitter):
         ]
     }
 
-    # Create mock response
     mock_response = AsyncMock()
     mock_response.status_code = 200
     mock_response.json = MagicMock(
@@ -923,19 +879,19 @@ async def test_pipe_mixed_content_types(pipe, user, event_emitter):
     async def mock_post_async(*args, **kwargs):
         return mock_response
 
-    with patch.object(pipe._http_client, "post", side_effect=mock_post_async) as mock_post:
-        result = await pipe.pipe(request_body, user, event_emitter)
+    mock_client = AsyncMock(spec=httpx.AsyncClient)
+    mock_client.is_closed = False
+    mock_client.post = AsyncMock(side_effect=mock_post_async)
+    pipe._http_client = mock_client
 
-        # Verify call was made with multipart data
-        args, kwargs = mock_post.call_args
-        assert "files" in kwargs
-        assert len(kwargs["files"]) == 1
+    result = await pipe.pipe(request_body, user, event_emitter)
 
-        # Verify combined text content
-        expected_text = "Analyze this image and tell me what you see"
-        assert kwargs["data"][pipe.valves.input_field] == expected_text
+    args, kwargs = mock_client.post.call_args
+    assert "files" in kwargs
 
-        assert result == "I see a test pattern"
+    expected_text = "Analyze this image and tell me what you see"
+    assert kwargs["data"][pipe.valves.input_field] == expected_text
+    assert result == "I see a test pattern"
 
 
 @pytest.mark.asyncio
@@ -950,7 +906,9 @@ async def test_attachment_logging(pipe, user, event_emitter):
                     {
                         "type": "image_url",
                         "image_url": {
-                            "url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg=="
+                            "url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAA"
+                            "EAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7w"
+                            "AAAABJ RU5ErkJggg=="
                         },
                     },
                 ],
@@ -958,7 +916,6 @@ async def test_attachment_logging(pipe, user, event_emitter):
         ]
     }
 
-    # Create mock response
     mock_response = AsyncMock()
     mock_response.status_code = 200
     mock_response.json = MagicMock(return_value={pipe.valves.response_field: "Processed"})
@@ -966,12 +923,38 @@ async def test_attachment_logging(pipe, user, event_emitter):
     async def mock_post_async(*args, **kwargs):
         return mock_response
 
-    with patch.object(pipe._http_client, "post", side_effect=mock_post_async):
-        with patch("n8n_pipe.n8n_pipe.logger") as mock_logger:
-            result = await pipe.pipe(request_body, user, event_emitter)
+    mock_client = AsyncMock(spec=httpx.AsyncClient)
+    mock_client.is_closed = False
+    mock_client.post = AsyncMock(side_effect=mock_post_async)
+    pipe._http_client = mock_client
 
-            # Verify logging includes image count
-            mock_logger.info.assert_called()
-            info_calls = [call.args[0] for call in mock_logger.info.call_args_list]
-            image_log_found = any("with text and 1 images" in call for call in info_calls)
-            assert image_log_found, f"Expected image logging not found in: {info_calls}"
+    with patch("n8n_pipe.n8n_pipe.logger") as mock_logger:
+        result = await pipe.pipe(request_body, user, event_emitter)
+
+        mock_logger.info.assert_called()
+        info_calls = [call.args[0] for call in mock_logger.info.call_args_list]
+        image_log_found = any("with text and %d image(s)" in c for c in info_calls)
+        assert image_log_found, f"Expected image logging not found in: {info_calls}"
+
+
+@pytest.mark.asyncio
+async def test_get_http_client_creates_new_when_none():
+    """Test that _get_http_client creates a client when none exists."""
+    pipe = Pipe()
+    pipe._http_client = None
+    client = pipe._get_http_client()
+    assert client is not None
+    assert not client.is_closed
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_get_http_client_creates_new_when_closed():
+    """Test that _get_http_client creates a new client when existing is closed."""
+    pipe = Pipe()
+    client = pipe._get_http_client()
+    await client.aclose()
+    new_client = pipe._get_http_client()
+    assert new_client is not None
+    assert not new_client.is_closed
+    await new_client.aclose()
