@@ -23,7 +23,7 @@ Hosted on the Open-WebUI hub: https://openwebui.com/f/quintana/n8n_pipe_ng
 Pick one:
 
 1. **Open-WebUI hub** — open https://openwebui.com/f/quintana/n8n_pipe_ng and click *Get*.
-2. **Release file** — download `n8n_pipe.py` from the [latest release](https://github.com/sboily/open-webui-n8n-pipe/releases/latest) and import it in *Admin Panel → Functions → +*.
+2. **Import from link** — in *Admin Panel → Functions → Import from Link*, paste `https://github.com/sboily/open-webui-n8n-pipe/releases/latest/download/n8n_pipe.py` (the bundle attached to the [latest release](https://github.com/sboily/open-webui-n8n-pipe/releases/latest)), review the code and save.
 3. **From source** — `python scripts/build_single_file.py` bundles the `n8n_pipe` package into `dist/n8n_pipe.py`.
 
 `httpx` and `pydantic` ship with Open-WebUI; nothing else is required.
