@@ -1,170 +1,148 @@
 # N8N Pipe for Open-WebUI
 
-This module implements a robust, asynchronous pipe for Open-WebUI that serves as an interface between the application and n8n workflows. It allows redirecting chat messages to n8n workflows and incorporating responses back into the conversation.
+[![CI](https://github.com/sboily/open-webui-n8n-pipe/actions/workflows/ci.yml/badge.svg)](https://github.com/sboily/open-webui-n8n-pipe/actions/workflows/ci.yml)
 
-Based on/forked from https://openwebui.com/f/coleam/n8n_pipe. Many thanks to the original author.
+An Open-WebUI [pipe function](https://docs.openwebui.com/features/plugin/functions/) that forwards chat messages — text, images and uploaded files — to an n8n workflow through a Webhook node, and returns the workflow answer to the chat.
 
-Hosted in openwebui: https://openwebui.com/f/quintana/n8n_pipe_ng
+Based on https://openwebui.com/f/coleam/n8n_pipe. Many thanks to the original author.
+
+Hosted on the Open-WebUI hub: https://openwebui.com/f/quintana/n8n_pipe_ng
 
 ## Features
 
-- ✅ Fully asynchronous interface compatible with Open-WebUI
-- ✅ Enhanced HTTP and general error handling with retry mechanism
-- ✅ Verification of expected response fields
-- ✅ Uses `httpx` for asynchronous HTTP requests
-- ✅ Configurable timeout to avoid request blocking
-- ✅ Message history management
-- ✅ Comprehensive input validation
-- ✅ Detailed status updates during processing
-- ✅ Robust error handling for edge cases
+- Asynchronous `httpx` calls; the timeout valve applies to every request (no restart needed)
+- Retries on connection errors and HTTP 502/503/504 only — never after a timeout, so a slow workflow is not started twice
+- Heartbeat status in the chat while n8n is working, clear translated errors (English, French)
+- Stable `sessionId` per chat (`__chat_id__`), isolated sessions for Open-WebUI background tasks (title, tags...)
+- Images (`data:` URLs, optionally remote URLs) and uploaded documents sent as `multipart/form-data`
+- Optional streaming of the answer (n8n Webhook node "Streaming response")
+- Metadata (user, chat, message, task, model) forwarded to the workflow
 
 ## Installation
 
-1. Ensure you have the required dependencies installed:
-   ```bash
-   pip install httpx pydantic
-   ```
+Pick one:
 
-2. Add the pipe file to your Open-WebUI installation.
+1. **Open-WebUI hub** — open https://openwebui.com/f/quintana/n8n_pipe_ng and click *Get*.
+2. **Release file** — download `n8n_pipe.py` from the [latest release](https://github.com/sboily/open-webui-n8n-pipe/releases/latest) and import it in *Admin Panel → Functions → +*.
+3. **From source** — `python scripts/build_single_file.py` bundles the `n8n_pipe` package into `dist/n8n_pipe.py`.
 
-## Configuration
+`httpx` and `pydantic` ship with Open-WebUI; nothing else is required.
 
-The `Pipe` class uses a "valves" system to configure its behavior:
+## Configuration (valves)
 
-| Parameter | Description | Default Value |
-|-----------|-------------|------------------|
-| `n8n_host` | Base URL for n8n server (without trailing slash) | http://localhost:5678 |
-| `n8n_webhook_id` | Webhook ID from n8n | your-webhook-id-here |
-| `n8n_test_mode` | Whether to use test mode URLs for n8n webhooks | False |
-| `n8n_bearer_token` | Bearer authentication token | your-token-here |
-| `input_field` | Input field name in the request | chatInput |
-| `response_field` | Response field name in the JSON response | output |
-| `emit_interval` | Interval between status emissions (seconds) | 2.0 |
-| `enable_status_indicator` | Enable or disable status indicators | True |
-| `timeout` | HTTP request timeout (seconds) | 30.0 |
-| `max_retries` | Maximum number of retries for failed requests | 2 |
-| `history_limit` | Maximum number of messages to keep in history | 10 |
+| Valve | Description | Default |
+|-------|-------------|---------|
+| `n8n_host` | Base URL of the n8n server | `http://localhost:5678` |
+| `n8n_webhook_id` | Path of the Webhook node (after `/webhook/`) | `your-webhook-id` |
+| `n8n_test_mode` | Call `/webhook-test/` (n8n *Test workflow*) instead of `/webhook/` | `false` |
+| `n8n_bearer_token` | Sent as `Authorization: Bearer ...`; empty sends no header | `""` |
+| `input_field` | Field carrying the user question | `chatInput` |
+| `response_field` | Field carrying the answer in the n8n JSON | `output` |
+| `timeout` | Seconds to wait for the n8n answer | `120` |
+| `max_retries` | Retries on connection errors / 502 / 503 / 504 | `2` |
+| `emit_interval` | Seconds between "Waiting for n8n..." heartbeats | `2` |
+| `enable_status_indicator` | Emit status events to the chat | `true` |
+| `session_id_mode` | `chat_id` (stable per chat) or `legacy` (user id + first message) | `chat_id` |
+| `stream_response` | Read the answer as a stream (see [Streaming](#streaming)) | `false` |
+| `allow_remote_images` | Download `http(s)` image URLs found in messages | `false` |
+| `max_attachment_size_mb` | Maximum size of one attachment | `10` |
+| `language` | Language of chat messages: `en`, `fr` | `en` |
 
-### Handling Test Mode vs Production
+The webhook URL is `{n8n_host}/webhook/{n8n_webhook_id}` (or `/webhook-test/` in test mode).
 
-The pipe automatically handles the difference between n8n test mode and production:
+## What n8n receives
 
-1. When `n8n_test_mode` is set to `False` (default), it uses the URL format:
-   ```
-   {n8n_host}/webhook/{n8n_webhook_id}
-   ```
-
-2. When `n8n_test_mode` is set to `True`, it uses the URL format:
-   ```
-   {n8n_host}/webhook-test/{n8n_webhook_id}
-   ```
-
-This allows you to easily switch between testing and production environments without changing the webhook URL manually.
-
-## Data Format
-
-### Data Sent to n8n
-
-The data format sent to the n8n webhook is as follows:
+Without attachments, a JSON body:
 
 ```json
 {
-  "sessionId": "user_id - content_of_first_message",
-  "chatInput": "question_extracted_from_last_message"
-}
-```
-
-Where:
-- `sessionId` is a string combining the user ID and the content of the first message (limited to 100 characters)
-- The input field (default `chatInput`) is configured via `valves.input_field`
-
-### Data Received from n8n
-
-The expected response from n8n must be in JSON format and contain a field specified by `valves.response_field` (default "output"):
-
-```json
-{
-  "output": "Text response from the n8n workflow"
-}
-```
-
-### Status Emission Format
-
-When an event emitter is provided, the module emits events in the following format:
-
-```json
-{
-  "type": "status",
-  "data": {
-    "status": "in_progress|complete",
-    "level": "info|warning|error",
-    "description": "Message describing the current status",
-    "done": false|true
+  "sessionId": "b2c1e9f0-...",
+  "chatInput": "What time is it?",
+  "metadata": {
+    "user_id": "a1b2c3",
+    "chat_id": "b2c1e9f0-...",
+    "message_id": "d4e5f6",
+    "task": null,
+    "model": "n8n_pipe_ng"
   }
 }
 ```
 
-## Usage Flow
+With attachments, the same fields as `multipart/form-data` (`metadata` is a JSON string) plus one file part per attachment:
 
-1. The user sends a message in the Open-WebUI interface
-2. The pipe intercepts this message and sends it to the configured n8n webhook
-3. n8n processes the message according to its configured workflow
-4. The pipe receives the response from n8n and adds it to the conversation
-5. The interface displays the response as if it came directly from the language model
+| Part | Content |
+|------|---------|
+| `image_0`, `image_1`, ... | Images attached to the last message (`image_0.png`, `image_1.jpg`, ...) |
+| `file_0`, `file_1`, ... | Documents uploaded in the chat, with their original filename and MIME type |
 
-## Error Handling
+The Webhook node parses `multipart/form-data` by itself: fields are in `$json.body`, files in the item's binary data under the part name (`image_0`, `file_0`, ...).
 
-The pipe includes comprehensive error handling:
+### Session id
 
-1. **HTTP Errors**: All HTTP errors are caught, logged, and reported back with appropriate status codes.
-2. **Retry Mechanism**: Failed requests can be automatically retried based on the `max_retries` setting.
-3. **Validation**: Input validation ensures proper URLs and field structures.
-4. **Message Validation**: Checks for empty messages, non-user messages, etc.
-5. **Response Field Validation**: Ensures the expected response field exists in the n8n response.
+- `chat_id` mode (default): the Open-WebUI chat id — stable for the whole conversation and unique across chats. Use it as the memory key of your agent.
+- `legacy` mode: `"{user_id} - {first message truncated to 100 chars}"`, the format used by versions ≤ 0.3. Two chats starting with the same sentence share a session.
+- Background tasks run by Open-WebUI on the same model (title, tags, follow-ups...) get a separate session, `"{sessionId}:{task}"`, and `metadata.task` is set (`title_generation`, `tags_generation`, ...). Configure a dedicated *task model* in Open-WebUI (*Admin → Settings → Interface*) if you do not want these calls to reach n8n at all.
 
-## Configuring n8n
+## What n8n must return
 
-To configure n8n to work with this pipe:
+A JSON object containing the `response_field`:
 
-1. Create a workflow in n8n
-2. Add a Webhook node as an entry point (trigger)
-3. Configure this webhook to accept POST requests with Bearer authentication
-4. Process the input data from the field configured by `input_field` (default: "chatInput")
-5. Return the response in a JSON object containing the field configured by `response_field` (default: "output")
+```json
+{ "output": "Text answer" }
+```
+
+- Webhook node *Respond: Using 'Respond to Webhook' node* or *When Last Node Finishes / First Entry JSON*. A list (`[{"output": ...}]`, *All Entries*) is accepted: the first item is used.
+- A non-string value is serialised as JSON before being shown.
+
+### Streaming
+
+Set the Webhook node to *Respond: Streaming response*, enable streaming on the AI Agent node, and turn on the `stream_response` valve. The pipe reads n8n's newline-delimited JSON (`{"type": "item", "content": "..."}`) and shows tokens as they arrive; `{"type": "error"}` chunks are reported to the chat. Plain-text streams and classic JSON answers keep working with the valve enabled.
+
+## Status messages and errors
+
+Status events (`{"type": "status", "data": {"level", "description", "done"}}`) show progress, retries, heartbeats and the final state. Errors are raised with a user-facing message, which Open-WebUI displays in the chat; the Open-WebUI log (`n8n_pipe.*` loggers) has the details.
+
+## Attachments and security
+
+- Only `image/*` content is accepted for images; every attachment is limited to `max_attachment_size_mb`.
+- Remote image URLs are disabled by default. When enabled, hosts resolving to private, loopback or link-local addresses are refused.
+- Uploaded documents are read through Open-WebUI's storage. When the bytes are not available, the text Open-WebUI extracted from the document is sent as `{name}.txt`.
+
+## Example workflow
+
+[`examples/n8n_echo_workflow.json`](examples/n8n_echo_workflow.json) is a minimal importable workflow: a Webhook node (POST, header auth) answering `{"output": "Echo: ..."}`. Import it in n8n, create a *Header Auth* credential (`Authorization` / `Bearer <token>`), set the same token in `n8n_bearer_token`, and set `n8n_webhook_id` to `openwebui`.
 
 ## Troubleshooting
 
-Common issues and solutions:
+| Message | Cause / fix |
+|---------|-------------|
+| `n8n did not answer within 120.0s` | Raise `timeout`. Also check the timeouts of any reverse proxy in front of Open-WebUI or n8n. |
+| `n8n is unavailable after N attempts` | n8n unreachable or returning 502/503/504; check the host and that the workflow is active. |
+| `n8n returned HTTP 404` | Wrong `n8n_webhook_id`, or the workflow is not active (production URLs need an active workflow; use `n8n_test_mode` while testing). |
+| `n8n returned HTTP 401/403` | Bearer token mismatch with the Webhook node credential. |
+| `Response field 'output' not found` | The workflow answer has no `output` key; adjust `response_field` or the Respond node. |
+| `Remote image URLs are disabled` | Enable `allow_remote_images` if you trust the users of this model. |
+| Empty title or odd chat titles | Open-WebUI runs title generation through the pipe; set a task model in Open-WebUI settings. |
 
-1. **Error "No messages found in the request body"**
-   - Check that the request body contains a non-empty `messages` array
-
-2. **Error "Last message is not from user"**
-   - Ensure the last message in the array has `role: "user"`
-
-3. **Error "Empty question received"**
-   - The last user message has empty content
-
-4. **HTTP error when calling n8n**
-   - Verify that the webhook URL is correct
-   - Check that the Bearer token is valid
-   - Ensure that the n8n webhook is accessible from Open-WebUI
-
-5. **Missing response field**
-   - Verify that your n8n workflow returns a JSON with the field configured in `response_field`
-
-6. **Retry failed**
-   - If all retries fail, check your n8n server availability
-   - Consider increasing the `max_retries` or `timeout` values
-
-## Testing
-
-Comprehensive tests are provided to ensure code reliability. To run them:
+## Development
 
 ```bash
-python -m pytest -xvs
+python -m venv .venv && . .venv/bin/activate
+pip install -e ".[dev]"
+pre-commit install
+pytest                      # unit tests with coverage (threshold 90 %)
+pre-commit run --all-files  # ruff format + lint, mypy
+python scripts/build_single_file.py   # dist/n8n_pipe.py
 ```
+
+Layout: `n8n_pipe/` (package: `valves`, `request`, `attachments`, `client`, `pipe`, `messages`, `status`, `constants`, `errors`), `tests/`, `scripts/build_single_file.py` (bundler), `examples/`.
+
+Releasing: bump `__version__` in `n8n_pipe/__init__.py`, update `CHANGELOG.md`, tag the commit with the same version (`git tag 0.4.0 && git push --tags`). The release workflow checks the tag against `__version__` and attaches `n8n_pipe.py` to the GitHub release.
 
 ## Contributing
 
-Contributions are welcome! Please feel free to submit a Pull Request.
+See [CONTRIBUTING.md](CONTRIBUTING.md). Issues and pull requests are welcome.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
