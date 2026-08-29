@@ -52,3 +52,7 @@ venv.bak/
 # OS specific files
 .DS_Store
 Thumbs.db
+
+# Type checker cache
+.mypy_cache/
+.ruff_cache/

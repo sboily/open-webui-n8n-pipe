@@ -1,0 +1,50 @@
+name: Bug report
+description: Something does not work as documented
+labels: [bug]
+body:
+  - type: input
+    id: pipe-version
+    attributes:
+      label: Pipe version
+      description: The `version` shown in the Open-WebUI function editor
+    validations:
+      required: true
+  - type: input
+    id: openwebui-version
+    attributes:
+      label: Open-WebUI version
+    validations:
+      required: true
+  - type: input
+    id: n8n-version
+    attributes:
+      label: n8n version
+    validations:
+      required: true
+  - type: dropdown
+    id: response-mode
+    attributes:
+      label: Webhook node "Respond" setting
+      options:
+        - Using 'Respond to Webhook' node
+        - When Last Node Finishes
+        - Streaming response
+        - Immediately
+    validations:
+      required: true
+  - type: textarea
+    id: valves
+    attributes:
+      label: Non-default valves
+      placeholder: "timeout: 600, stream_response: true"
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: Include the status message shown in the chat and the Open-WebUI log lines (`n8n_pipe`).
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
